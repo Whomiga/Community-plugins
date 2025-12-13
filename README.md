@@ -93,7 +93,7 @@ Change Pan Control to pan whole screens
 Add-on to the player tracker plugin: Adjust history limit of 3 hours to another value. Toggle name labels, last action time, toggle/adjust player colors, focus on players, display 1 single player. Integrated Marker Label plugin and Spectrum Colorpicker 1.8.1 plugin. Supports Machina _̶̱̍_̴̳͉̆̈́M̷͔̤͒Ą̷̍C̴̼̕ͅH̶̹͕̼̾Ḭ̵̇̾̓N̵̺͕͒̀̍Ä̴̞̰́_̴̦̀͆̓_̷̣̈́  player.
 
 *Depends*: player-activity-tracker@breunigs  |
-*Version:* 2.0.0.20250424.223800
+*Version:* 2.0.1.20251028.233800
 
 
   
@@ -474,7 +474,7 @@ Quickly replace one portal with another in Draw Tools
 
 Quickly show a list of details for your favorite list of portals.
 
-*Version:* 0.1.6.20210724.002500
+*Version:* 1.0.0.20251025.232300
 
 
   
@@ -524,7 +524,7 @@ Show current in-game inventory. Requires CORE subscription. Fork by DanielOnDior
 
 Show portal info about resonators and mods for the selected portal directly on the map.
 
-*Version:* 0.0.3.20210724.002500
+*Version:* 1.0.0.20251106.130200
 
 
   
@@ -557,11 +557,11 @@ Counts portals by level and faction inside polygons or search result.
 
 
 
-
+![preview](https://raw.githubusercontent.com/Whomiga/iitc-plugin-portaldetailsmods/refs/heads/master/preview.png)
 
 Show Mod Pictures in Portal Details
 
-*Version:* 0.0.2
+*Version:* 0.0.5
 
 
   
@@ -623,7 +623,7 @@ Assist planning L8 resonator max-out using VRBB — e.g. 3 agents from the same 
 
 *[Homepage](https://xelminoe.github.io/VRBB-L8-Maximizer/)* |
 *[Issue tracker](https://github.com/Xelminoe/VRBB-L8-Maximizer/issues)* |
-*Version:* 1.0
+*Version:* 1.0.1
 
 
   
@@ -734,7 +734,7 @@ Shows drone flight distance between portals
 
 
   
-### [Fan Fields 2 ](https://raw.githubusercontent.com/IITC-CE/Community-plugins/master/dist/heistergand/fanfields.user.js) by Heistergand
+### [Fan Fields 2](https://raw.githubusercontent.com/IITC-CE/Community-plugins/master/dist/heistergand/fanfields.user.js) by Heistergand
 
 
 
@@ -746,7 +746,7 @@ Calculate how to link the portals to create the largest tidy set of nested field
 *Recommends*: bookmarks@ZasoGD draw-tools-plus@zaso liveInventory@DanielOnDiordna keys@xelio  |
 *[Homepage](https://github.com/Heistergand/fanfields2/)* |
 *[Issue tracker](https://github.com/Heistergand/fanfields2/issues)* |
-*Version:* 2.6.3.20250611
+*Version:* 2.7.1.20251210
 
 
   
@@ -1123,7 +1123,7 @@ Copy portal info to clipboard or send it to Discord in the format the PokeNav Di
 *Recommends*: s2check@Alfonso_M  |
 *[Homepage](https://github.com/MaxEtMoritz/PNavCopy)* |
 *[Issue tracker](https://github.com/MaxEtMoritz/PNavCopy/issues)* |
-*Version:* 1.7.6
+*Version:* 1.8.0
 
 
   

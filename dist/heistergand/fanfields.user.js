@@ -1,9 +1,9 @@
 // ==UserScript==
 // @author          Heistergand
-// @name            Fan Fields 2 
 // @id              fanfields@heistergand
+// @name            Fan Fields 2
 // @category        Layer
-// @version         2.6.3.20250611
+// @version         2.7.1.20251210
 // @description     Calculate how to link the portals to create the largest tidy set of nested fields. Enable from the layer chooser.
 // @downloadURL     https://raw.githubusercontent.com/IITC-CE/Community-plugins/master/dist/heistergand/fanfields.user.js
 // @updateURL       https://raw.githubusercontent.com/IITC-CE/Community-plugins/master/dist/heistergand/fanfields.meta.js
@@ -43,13 +43,44 @@ function wrapper(plugin_info) {
     // ensure plugin framework is there, even if iitc is not yet loaded
     if(typeof window.plugin !== 'function') window.plugin = function() {};
     plugin_info.buildName = 'main';
-    plugin_info.dateTimeVersion = '2024-04-10-233042';
+    plugin_info.dateTimeVersion = '2025-12-10-030842';
     plugin_info.pluginId = 'fanfields';
 
     /* global L -- eslint */
     /* exported setup, changelog --eslint */
     let arcname = window.PLAYER.team === 'ENLIGHTENED' ? 'Arc' : '***';
     var changelog = [
+        {
+            version: '2.7.1',
+            changes: [
+                'FIX: The linking algorithm from version 2.6.6 was not perfect.',
+            ],
+        },
+        {
+            version: '2.7.0',
+            changes: [
+                'NEW: Added portal sequence editor to customise the visit order.',
+                'NEW: Added straight-line route preview along the portal sequence.',
+            ],
+        },
+        {
+            version: '2.6.6',
+            changes: [
+                'NEW: New linking algorythm.',
+            ],
+        },
+        {
+            version: '2.6.5',
+            changes: [
+                'FIX: Fixed last fix.',
+            ],
+        },
+        {
+            version: '2.6.4',
+            changes: [
+                'FIX: Fixed compatibility with Inventory Overview plugin.',
+            ],
+        },
         {
             version: '2.6.3',
             changes: [
@@ -77,19 +108,19 @@ function wrapper(plugin_info) {
         {
             version: '2.5.6',
             changes: [
-              'NEW: Implementing link details in show-as-list dialog.',
+                'NEW: Implementing link details in show-as-list dialog.',
             ],
         },
         {
             version: '2.5.5',
             changes: [
-              'FIX: Plugin did not work on IITC-Mobile.',
+                'FIX: Plugin did not work on IITC-Mobile.',
             ],
         },
         {
             version: '2.5.4',
             changes: [
-              'NEW: Option to only use bookmarked portals within the Fanfields (Toggle-Button)',
+                'NEW: Option to only use bookmarked portals within the Fanfields (Toggle-Button)',
             ],
         },
         {
@@ -397,10 +428,20 @@ function wrapper(plugin_info) {
     thisplugin.perimeterpoints = [];
     thisplugin.startingpointIndex = 0;
 
+
+
     thisplugin.links = [];
     thisplugin.linksLayerGroup = null;
     thisplugin.fieldsLayerGroup = null;
     thisplugin.numbersLayerGroup = null;
+
+
+    // ghi#23
+    thisplugin.orderPathLayerGroup = null;
+    thisplugin.showOrderPath = false;
+    thisplugin.manualOrderGuids = null;
+    thisplugin.lastPlanSignature = null;
+
 
     thisplugin.selectPolygon = function() {};
     thisplugin.saveBookmarks = function() {
@@ -468,13 +509,17 @@ function wrapper(plugin_info) {
         thisplugin.startingpointIndex = i;
         thisplugin.startingpointGUID = thisplugin.perimeterpoints[thisplugin.startingpointIndex][0];
         thisplugin.startingpoint = this.fanpoints[thisplugin.startingpointGUID];
+
+        // manuelle Reihenfolge zurücksetzen, weil der Start sich ändert ghi#23
+        thisplugin.manualOrderGuids = null;
+
         thisplugin.updateLayer();
     }
 
     // cycle to next starting point on the convex hull list of portals
     thisplugin.nextStartingPoint = function() {
         // *** startingpoint handling is duplicated in updateLayer().
-        
+
         var i = thisplugin.startingpointIndex + 1;
         if (i >= thisplugin.perimeterpoints.length) {
             i = 0;
@@ -625,14 +670,14 @@ function wrapper(plugin_info) {
         var gmnav='http://maps.google.com/maps/dir/';
 
         thisplugin.sortedFanpoints.forEach(function(portal, index) {
-            
+
             var p, title, lat, lng;
             var latlng = map.unproject(portal.point, thisplugin.PROJECT_ZOOM);
             lat = Math.round(latlng.lat * 10000000) / 10000000
             lng = Math.round(latlng.lng * 10000000) / 10000000
             gmnav+=`${lat},${lng}/`;
             p = portal.portal;
-                // window.portals[portal.guid];
+            // window.portals[portal.guid];
             title = "unknown title";
             if (p !== undefined) {
                 title = p.options.data.title;
@@ -641,11 +686,18 @@ function wrapper(plugin_info) {
             let availableKeysText = '';
             let availableKeys = 0;
             if (window.plugin.keys || window.plugin.LiveInventory) {
+
                 if (window.plugin.LiveInventory) {
-                    availableKeys = window.plugin.LiveInventory.keyGuidCount[portal.guid] || 0;
+                    if (window.plugin.LiveInventory.keyGuidCount) {
+                        availableKeys = window.plugin.LiveInventory.keyGuidCount[portal.guid] || 0;
+                    } else if (window.plugin.LiveInventory.keyCount) {
+                        availableKeys = window.plugin.LiveInventory.keyCount.find(obj => obj.portalCoupler.portalGuid === portal.guid)?.count || 0;
+                    }
                 } else {
                     availableKeys = window.plugin.keys.keys[portal.guid] || 0;
                 }
+                // Beware of bugs in the above code; I have only proved it correct, not tried it! (Donald Knuth)
+
                 let keyColorAttribute = '';
                 if (availableKeys >= portal.incoming.length) {
                     keyColorAttribute = 'plugin_fanfields_enoughKeys';
@@ -781,6 +833,179 @@ function wrapper(plugin_info) {
     };
 
 
+    // ghi#23 start (3)
+    // Manage-Order-Dialog
+    thisplugin.showManageOrderDialog = function() {
+        var that = thisplugin;
+
+        if (!that.sortedFanpoints || that.sortedFanpoints.length === 0) {
+            var widthEmpty = 350;
+            if (that.MaxDialogWidth < widthEmpty) widthEmpty = that.MaxDialogWidth;
+            dialog({
+                html: '<p>No Fanfield plan calculated yet.<br>Draw a polygon and let Fanfields calculate first.</p>',
+                id: 'plugin_fanfields_order_dialog_empty',
+                title: 'Manage Fanfields order',
+                width: widthEmpty,
+                closeOnEscape: true
+            });
+            return;
+        }
+        var orderDirty = false;
+        function buildTableHTML() {
+            var html = '';
+            html += '<table id="plugin_fanfields_order_table" class="plugin_fanfields_order_table">';
+            html += '<thead><tr>';
+            html += '<th style="width:30px;">#</th>';
+            html += '<th>Portal</th>';
+            html += '<th style="width:60px;">Keys</th>';
+            html += '<th style="width:60px;">Links out</th>';
+            html += '</tr></thead><tbody>';
+
+            that.sortedFanpoints.forEach(function(fp, idx) {
+                var p = fp.portal;
+                var title = (p && p.options && p.options.data && p.options.data.title) ? p.options.data.title : 'unknown title';
+
+                var keys = fp.incoming ? fp.incoming.length : 0;
+                var out = fp.outgoing ? fp.outgoing.length : 0;
+
+                var isAnchor = (fp.guid === that.startingpointGUID);
+                var trClass = isAnchor ? 'plugin_fanfields_order_anchor' : 'plugin_fanfields_order_row';
+                var draggableAttr = isAnchor ? '' : ' draggable="true"';
+                var handle = isAnchor ? '' : '<span class="plugin_fanfields_order_handle">&#9776;</span>&nbsp;';
+
+                html += '<tr class="' + trClass + '" data-guid="' + fp.guid + '"' + draggableAttr + '>';
+                html += '<td>' + idx + '</td>';
+                html += '<td>' + handle + title + (isAnchor ? ' <span class="plugin_fanfields_italic">(anchor)</span>' : '') + '</td>';
+                html += '<td style="text-align:right;">' + keys + '</td>';
+                html += '<td style="text-align:right;">' + out + '</td>';
+                html += '</tr>';
+            });
+
+            html += '</tbody></table>';
+            html += '<div class="plugin_fanfields_order_hint">';
+            html += 'Drag &amp; drop rows to change visit order. First row (anchor) is fixed.<br>';
+            html += 'Click <b>Apply</b> to use this order for the fanfield calculation.';
+            html += '</div>';
+            html += '<div style="margin-top:5px;text-align:right;">';
+            html += '  <button id="plugin_fanfields_order_path">Path</button> ';
+            html += '  <button id="plugin_fanfields_order_reset" >Reset</button> ';
+            html += '  <button id="plugin_fanfields_order_apply" >Apply</button>';
+            html += '</div>';
+            return html;
+        }
+
+        var width = 450;
+        if (that.MaxDialogWidth < width) width = that.MaxDialogWidth;
+
+        dialog({
+            html: '<div id="plugin_fanfields_order_dialog_inner">' + buildTableHTML() + '</div>',
+            id: 'plugin_fanfields_order_dialog',
+            title: 'Manage Fanfields order',
+            width: width,
+            closeOnEscape: true
+        });
+
+        function initDragAndButtons() {
+            var $tbody = $('#plugin_fanfields_order_table tbody');
+            var dragSrcRow = null;
+
+            // bestehende Handler sauber entfernen, falls Dialog mehrfach geöffnet wurde
+            $tbody.off('dragstart dragend dragover drop');
+
+            $tbody.on('dragstart', 'tr.plugin_fanfields_order_row', function(e) {
+                dragSrcRow = this;
+                e.originalEvent.dataTransfer.effectAllowed = 'move';
+                e.originalEvent.dataTransfer.setData('text/plain', $(this).data('guid'));
+                $(this).addClass('plugin_fanfields_order_dragging');
+
+                orderDirty = true;
+                // $('#plugin_fanfields_order_reset').prop('disabled', false);
+                // $('#plugin_fanfields_order_apply').prop('disabled', false);
+
+                if (that.showOrderPath) {
+                    that.setOrderPathActive(false);
+                    $('#plugin_fanfields_order_path').text('Path');
+                }
+
+            });
+
+            $tbody.on('dragend', 'tr.plugin_fanfields_order_row', function() {
+                $(this).removeClass('plugin_fanfields_order_dragging');
+                dragSrcRow = null;
+            });
+
+            $tbody.on('dragover', 'tr.plugin_fanfields_order_row', function(e) {
+                e.preventDefault();
+                e.originalEvent.dataTransfer.dropEffect = 'move';
+            });
+
+            $tbody.on('drop', 'tr.plugin_fanfields_order_row', function(e) {
+                e.preventDefault();
+                if (!dragSrcRow || dragSrcRow === this) return;
+                if ($(this).hasClass('plugin_fanfields_order_anchor')) return;
+                $(this).before(dragSrcRow);
+            });
+
+            // Reset- und Apply-Buttons neu binden
+            $('#plugin_fanfields_order_reset').off('click').on('click', function() {
+                // manuelle Order löschen, Plan neu berechnen
+                that.manualOrderGuids = null;
+                that.updateLayer();
+
+                orderDirty = false;
+                // $('#plugin_fanfields_order_reset').prop('disabled', true);
+                // $('#plugin_fanfields_order_apply').prop('disabled', true);
+
+
+                // Tabelle im Dialog aktualisieren (nur Inhalt austauschen)
+                $('#plugin_fanfields_order_dialog_inner').html(buildTableHTML());
+                initDragAndButtons();
+
+                if (that.showOrderPath) {
+                    that.updateOrderPath();
+                }
+            });
+
+            $('#plugin_fanfields_order_apply').off('click').on('click', function() {
+                var guids = [];
+                $('#plugin_fanfields_order_table tbody tr').each(function() {
+                    guids.push($(this).data('guid'));
+                });
+
+                // Sicherheit: erster Eintrag muss der Anchor bleiben
+                if (guids[0] !== that.startingpointGUID) {
+                    that.manualOrderGuids = null;
+                } else {
+                    that.manualOrderGuids = guids;
+                }
+
+                orderDirty = false;
+                // $('#plugin_fanfields_order_reset').prop('disabled', true);
+                // $('#plugin_fanfields_order_apply').prop('disabled', true);
+
+
+                that.delayedUpdateLayer(0.2);
+                $('#plugin_fanfields_order_dialog').dialog('close');
+            });
+
+            $('#plugin_fanfields_order_path').off('click').on('click', function() {
+                var newState = !that.showOrderPath;
+                that.setOrderPathActive(newState);
+                $(this).text(newState ? 'Hide path' : 'Path');
+            });
+            $('#plugin_fanfields_order_path').text(
+                that.showOrderPath ? 'Hide path' : 'Path'
+            );
+
+        }
+
+        initDragAndButtons();
+    };
+
+
+    // ghi#23 end (3)
+
+
     thisplugin.respectCurrentLinks = false;
     thisplugin.toggleRespectCurrentLinks = function() {
         thisplugin.respectCurrentLinks = !thisplugin.respectCurrentLinks;
@@ -815,17 +1040,17 @@ function wrapper(plugin_info) {
 
     thisplugin.use_bookmarks_only = false;
     thisplugin.useBookmarksOnly = function () {
-      thisplugin.use_bookmarks_only = !thisplugin.use_bookmarks_only;
-      if (thisplugin.use_bookmarks_only) {
-        $('#plugin_fanfields_bookarks_only_btn').html(
-          '&#128278;&nbsp;Bookmarks only'
-        );
-      } else {
-        $('#plugin_fanfields_bookarks_only_btn').html(
-          '&#128278;&nbsp;All Portals'
-        );
-      }
-      thisplugin.delayedUpdateLayer(0.2);
+        thisplugin.use_bookmarks_only = !thisplugin.use_bookmarks_only;
+        if (thisplugin.use_bookmarks_only) {
+            $('#plugin_fanfields_bookarks_only_btn').html(
+                '&#128278;&nbsp;Bookmarks only'
+            );
+        } else {
+            $('#plugin_fanfields_bookarks_only_btn').html(
+                '&#128278;&nbsp;All Portals'
+            );
+        }
+        thisplugin.delayedUpdateLayer(0.2);
     };
 
 
@@ -837,6 +1062,10 @@ function wrapper(plugin_info) {
             clockwiseSymbol = "&#8635;", clockwiseWord = "Clockwise";
         else
             clockwiseSymbol = "&#8634;", clockwiseWord = "Counterclockwise";
+
+        // Reihenfolge zurücksetzen – neue Geometrie, neue Basisreihenfolge (ghi#23)
+        thisplugin.manualOrderGuids = null;
+
         $('#plugin_fanfields_clckwsbtn').html(clockwiseWord+'&nbsp;'+clockwiseSymbol+'');
         thisplugin.delayedUpdateLayer(0.2);
     };
@@ -1105,6 +1334,53 @@ function wrapper(plugin_info) {
         };
 
 
+
+        // Manage-Order-Dialog (ghi#23)
+        $("<style>").prop("type", "text/css").html('\n' +
+                                                   '.plugin_fanfields_order_table {\n' +
+                                                   '  width: 100%;\n' +
+                                                   '  border-collapse: collapse;\n' +
+                                                   '  font-size: 11px;\n' +
+                                                   '}\n' +
+                                                   '.plugin_fanfields_order_table th,\n' +
+                                                   '.plugin_fanfields_order_table td {\n' +
+                                                   '  border: 1px solid #555;\n' +
+                                                   '  padding: 2px 4px;\n' +
+                                                   '}\n' +
+                                                   '.plugin_fanfields_order_table tbody tr.plugin_fanfields_order_row {\n' +
+                                                   '  cursor: move;\n' +
+                                                   '}\n' +
+                                                   '.plugin_fanfields_order_table tbody tr.plugin_fanfields_order_row:hover {\n' +
+                                                   '  background-color: rgba(255, 206, 0, 0.08);\n' +
+                                                   '}\n' +
+                                                   '.plugin_fanfields_order_anchor {\n' +
+                                                   '  font-weight: bold;\n' +
+                                                   '  background-color: rgba(8, 60, 78, 0.6);\n' +
+                                                   '}\n' +
+                                                   '.plugin_fanfields_order_handle {\n' +
+                                                   '  font-family: monospace;\n' +
+                                                   '  padding-right: 4px;\n' +
+                                                   '}\n' +
+                                                   '.plugin_fanfields_order_hint {\n' +
+                                                   '  margin-top: 5px;\n' +
+                                                   '  font-size: 10px;\n' +
+                                                   '  color: #ccc;\n' +
+                                                   '}\n'
+                                                  ).appendTo("head");
+
+        $("<style>").prop("type", "text/css").html('\n' +
+                                                   '#plugin_fanfields_order_dialog button[disabled] {\n' +
+                                                   '  opacity: 0.3;\n' +
+                                                   '  cursor: default;\n' +
+                                                   '  color: #ccc;\n' +
+                                                   '}\n' +
+                                                   '#plugin_fanfields_order_dialog button:not([disabled]) {\n' +
+                                                   '  cursor: pointer;\n' +
+                                                   '}\n'
+                                                  ).appendTo("head");
+
+
+
     };
 
     thisplugin.getThirds = function(list, a,b) {
@@ -1340,6 +1616,165 @@ function wrapper(plugin_info) {
         return starting_ll.distanceTo(other_ll);
     }
 
+
+
+
+    // Pfeilspitze im Projektionsraum (Pixel) berechnen
+    thisplugin.buildArrowHeadPoints = function(pointA, pointB) {
+        // einfache kleine Pfeilspitze in Pixeln
+        var tip = pointB; // Spitze am Zielpunkt
+        var dx = pointB.x - pointA.x;
+        var dy = pointB.y - pointA.y;
+        var len = Math.sqrt(dx*dx + dy*dy);
+        if (len === 0) return [pointB];
+
+        // Normierter Richtungsvektor
+        var ux = dx / len;
+        var uy = dy / len;
+
+        // Pfeilgröße (Pixel)
+        var arrowLength = 25;
+        var arrowWidth  = 14;
+
+        // Basis der Pfeilspitze etwas vor dem Zielpunkt
+        var baseX = tip.x - ux * arrowLength;
+        var baseY = tip.y - uy * arrowLength;
+
+        // Senkrechter Vektor
+        var px = -uy;
+        var py = ux;
+
+        var leftX  = baseX + px * (arrowWidth / 2);
+        var leftY  = baseY + py * (arrowWidth / 2);
+        var rightX = baseX - px * (arrowWidth / 2);
+        var rightY = baseY - py * (arrowWidth / 2);
+
+        return [
+            new L.Point(leftX,  leftY),
+            tip,
+            new L.Point(rightX, rightY)
+        ];
+    };
+
+
+    /*     thisplugin.updateOrderPath = function() {
+        var that = thisplugin;
+        var lg = that.orderPathLayerGroup;
+        if (!lg) return;
+
+        lg.clearLayers();
+
+        var sorted = that.sortedFanpoints || [];
+        if (sorted.length < 2) return;
+
+        // Punkte im Projektionsraum
+        var projPoints = sorted.map(function(fp) { return fp.point; });
+
+        // Als Polyline (ganze Route)
+        var latlngs = projPoints.map(function(p) {
+            return map.unproject(p, that.PROJECT_ZOOM);
+        });
+
+        L.polyline(latlngs, {
+            color: '#ffff00',
+            weight: 3,
+            opacity: 0.9,
+            dashArray: '6,8',
+            interactive: false
+        }).addTo(lg);
+
+        // Pfeilspitze am Ende
+        var n = projPoints.length;
+        var pointA = projPoints[n-2];
+        var pointB = projPoints[n-1];
+
+        var arrowPts = that.buildArrowHeadPoints(pointA, pointB);
+        var arrowLatLngs = arrowPts.map(function(p) {
+            return map.unproject(p, that.PROJECT_ZOOM);
+        });
+
+        L.polygon(arrowLatLngs, {
+            color: '#ffff00',
+            weight: 1,
+            fillColor: '#ffff00',
+            fillOpacity: 0.9,
+            interactive: false
+        }).addTo(lg);
+    };
+ */
+    thisplugin.updateOrderPath = function() {
+        var that = thisplugin;
+        var lg = that.orderPathLayerGroup;
+        if (!lg) return;
+
+        lg.clearLayers();
+
+        var sorted = that.sortedFanpoints || [];
+        if (sorted.length < 2) return;
+
+        // Route als Polyline zeichnen (weiterhin in LatLng)
+        var latlngs = sorted.map(function(fp) {
+            // fp.point ist im PROJECT_ZOOM; das ist okay, hier wollen wir nur die Geometrie grob nachzeichnen
+            return map.unproject(fp.point, that.PROJECT_ZOOM);
+        });
+
+        L.polyline(latlngs, {
+            color: '#ffff00',
+            weight: 3,
+            opacity: 0.9,
+            dashArray: '6,8',
+            interactive: false
+        }).addTo(lg);
+
+        // Pfeilspitze: jetzt in Layer-Pixel-Koordinaten der AKTUELLEN Zoomstufe rechnen
+        var n = latlngs.length;
+        var latA = latlngs[n-2];
+        var latB = latlngs[n-1];
+
+        // -> LayerPoints (Bildschirmkoordinaten)
+        var pA = map.latLngToLayerPoint(latA);
+        var pB = map.latLngToLayerPoint(latB);
+
+        var arrowPtsLayer = that.buildArrowHeadPoints(pA, pB);
+
+        // zurück in LatLng wandeln
+        var arrowLatLngs = arrowPtsLayer.map(function(p) {
+            return map.layerPointToLatLng(p);
+        });
+
+        L.polygon(arrowLatLngs, {
+            color: '#ffff00',
+            weight: 1,
+            fillColor: '#ffff00',
+            fillOpacity: 0.9,
+            interactive: false
+        }).addTo(lg);
+    };
+
+
+    thisplugin.setOrderPathActive = function(active) {
+        var that = thisplugin;
+        that.showOrderPath = !!active;
+
+        if (!that.orderPathLayerGroup) {
+            that.orderPathLayerGroup = new L.LayerGroup();
+        }
+
+        if (that.showOrderPath) {
+            if (!map.hasLayer(that.orderPathLayerGroup)) {
+                that.orderPathLayerGroup.addTo(map);
+            }
+            that.updateOrderPath();
+        } else {
+            if (that.orderPathLayerGroup) {
+                that.orderPathLayerGroup.clearLayers();
+                if (map.hasLayer(that.orderPathLayerGroup)) {
+                    map.removeLayer(that.orderPathLayerGroup);
+                }
+            }
+        }
+    };
+
     thisplugin.bearingWord = function(bearing) {
         var bearingword = '';
         if      (bearing >=  22 && bearing <=  67) bearingword = 'NE';
@@ -1541,7 +1976,7 @@ function wrapper(plugin_info) {
                     continue;
                 }
                 ll = fanLayer.getLatLngs();
-                
+
                 polygon = [];
                 for ( k = 0; k < ll.length; ++k) {
                     p = map.project(ll[k], thisplugin.PROJECT_ZOOM);
@@ -1564,7 +1999,7 @@ function wrapper(plugin_info) {
         thisplugin.dtLayers = plugin.drawTools.drawnItems.getLayers();
 
         thisplugin.dtLayersByColor = function(dtLayers) {
-            
+
             var colors = [];
             var color;
             var result = [];
@@ -1616,15 +2051,44 @@ function wrapper(plugin_info) {
                                        this.filterPolygon);
 
 
+        /*
         var npoints = Object.keys(this.fanpoints).length;
         if (npoints === 0) {
             return;
         }
+        */
+        var fanpointGuids = Object.keys(this.fanpoints);
+        var npoints = fanpointGuids.length;
+
+        if (npoints === 0) {
+            // Kein Plan -> Signatur zurücksetzen und Pfad aus
+            thisplugin.lastPlanSignature = null;
+            if (thisplugin.showOrderPath) {
+                thisplugin.setOrderPathActive(false);
+            }
+            return;
+        }
+
+        // NEU: Signatur der aktuellen Portalmenge (GUID-Menge, unabhängig von Reihenfolge)
+        var currentSignature = fanpointGuids.sort().join(',');
+
+        // Wenn sich die Menge der Portale geändert hat: Pfad deaktivieren
+        if (thisplugin.lastPlanSignature !== null &&
+            thisplugin.lastPlanSignature !== currentSignature &&
+            thisplugin.showOrderPath) {
+
+            thisplugin.setOrderPathActive(false);
+        }
+
+        // Signatur für nächsten Durchlauf merken
+        thisplugin.lastPlanSignature = currentSignature;
+
+
 
         // Find convex hull from fanpoints list of points
         // Returns array : [guid, [x,y],.....]
         function convexHull(points) {
-            
+
             // nested function
             function cross(a, b, o) {
                 //return (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
@@ -1667,7 +2131,7 @@ function wrapper(plugin_info) {
         // Add Marker Point to list of Fanpoints
         // Todo: get color magic to the startingMarker
         if (thisplugin.startingMarker !== undefined) {
-            
+
             if (thisplugin.startingMarkerGUID in window.portals ) {
                 this.fanpoints[thisplugin.startingMarkerGUID] = thisplugin.startingMarker;
             }
@@ -1677,7 +2141,7 @@ function wrapper(plugin_info) {
             var i;
             var done = false;
             if (GUID !== undefined) {
-                
+
                 for (i = 0; i < perimeter.length; i++) {
                     if (perimeter[i] === GUID) {
                         //already in
@@ -1776,6 +2240,38 @@ function wrapper(plugin_info) {
             return a.bearing - b.bearing;
         });
 
+        // ghi#23 start (1)
+        // manuelle Reihenfolge anwenden, falls vorhanden
+        if (thisplugin.manualOrderGuids &&
+            thisplugin.manualOrderGuids.length === this.sortedFanpoints.length) {
+
+            var byGuid = {};
+            this.sortedFanpoints.forEach(function(fp) {
+                byGuid[fp.guid] = fp;
+            });
+
+            var newOrder = [];
+            var allPresent = true;
+
+            thisplugin.manualOrderGuids.forEach(function(guid) {
+                if (byGuid[guid]) {
+                    newOrder.push(byGuid[guid]);
+                } else {
+                    allPresent = false;
+                }
+            });
+
+            // nur übernehmen, wenn alles konsistent ist
+            if (allPresent &&
+                newOrder.length === this.sortedFanpoints.length &&
+                newOrder[0].guid === thisplugin.startingpointGUID) {
+                this.sortedFanpoints = newOrder;
+            }
+        }
+
+        // ghi#23 end (1)
+
+
         //console.log("rotating...");
         // rotate the this.sortedFanpoints array until the bearing to the startingpoint has the longest gap to the previous one.
         // if no gap bigger 90° is present, start with the longest link.
@@ -1812,28 +2308,90 @@ function wrapper(plugin_info) {
             //lines.sort(function(a, b){return b.bearing - a.bearing;});
         }
 
+        // ghi#23
+        // ======= MANUELLE REIHENFOLGE ANWENDEN (falls vorhanden) =======
+        if (thisplugin.manualOrderGuids &&
+            thisplugin.manualOrderGuids.length === this.sortedFanpoints.length) {
+
+            var byGuid = {};
+            this.sortedFanpoints.forEach(function(fp) {
+                byGuid[fp.guid] = fp;
+            });
+
+            var newOrder = [];
+            var allPresent = true;
+
+            thisplugin.manualOrderGuids.forEach(function(guid) {
+                if (byGuid[guid]) {
+                    newOrder.push(byGuid[guid]);
+                } else {
+                    allPresent = false;
+                }
+            });
+
+            // Nur wenn alle GUIDs passen und der Anker an Position 0 bleibt, übernehmen wir die Reihenfolge
+            if (allPresent &&
+                newOrder.length === this.sortedFanpoints.length &&
+                newOrder[0].guid === thisplugin.startingpointGUID) {
+                this.sortedFanpoints = newOrder;
+            }
+        }
+        // ======= ENDE MANUELLE REIHENFOLGE =======
+
+
         donelinks = [];
         var outbound = 0;
         var possibleline;
-        
-        for(pa = 0; pa < this.sortedFanpoints.length; pa++){
+
+        for (pa = 0; pa < this.sortedFanpoints.length; pa++) {
             bearing = this.sortedFanpoints[pa].bearing;
             //console.log("FANPOINTS: " + pa + " to 0 bearing: "+ bearing + " " + this.bearingWord(bearing));
             sublinkCount = 0;
 
-            for(pb = 0 ; pb < pa; pb++) {
+            // Kandidaten pb < pa einsammeln und nach Distanz zum neuen Portal (pa) + Distanz zum Anker sortieren.
+            // Anchor (pb === 0) bekommt metric = Infinity und kommt damit immer zuerst.
+            var newPoint = this.sortedFanpoints[pa].point;
+            var anchorPoint = this.sortedFanpoints[0].point;
+
+            var candidates = [];
+            for (pb = 0; pb < pa; pb++) {
+                var candPoint = this.sortedFanpoints[pb].point;
+
+                var d = thisplugin.distanceTo(newPoint, candPoint);
+                d += thisplugin.distanceTo(anchorPoint, candPoint);
+                var metric;
+                if (pb === 0) {
+                    metric = Infinity;
+                } else {
+                    metric = thisplugin.distanceTo(newPoint, candPoint);
+                    metric += thisplugin.distanceTo(anchorPoint, candPoint);
+                }
+                candidates.push({
+                    pbIndex: pb,
+                    isAnchor: (pb === 0),
+                    metric: metric
+                });
+            }
+
+            candidates.sort(function (u, v) {
+                return v.metric - u.metric;
+            });
+
+
+            for (var ci = 0; ci < candidates.length; ci++) {
+                pb = candidates[ci].pbIndex;
                 outbound = 0;
+
                 a = this.sortedFanpoints[pa].point;
                 b = this.sortedFanpoints[pb].point;
                 bearing = this.getBearing(a, b);
                 const distance = thisplugin.distanceTo(a, b);
 
-                if (pb===0) {
+                if (pb === 0) {
                     var maxLinks = 8 + thisplugin.availableSBUL * 8;
-                    if (thisplugin.stardirection == thisplugin.starDirENUM.RADIATING && centerOutgoings < maxLinks ) {
+                    if (thisplugin.stardirection == thisplugin.starDirENUM.RADIATING && centerOutgoings < maxLinks) {
                         outbound = 1;
-                    }
-                    else {
+                    } else {
                         thisplugin.centerKeys++;
                     }
 
@@ -1850,7 +2408,7 @@ function wrapper(plugin_info) {
                     b: b,
                     bearing: bearing,
                     isJetLink: false,
-                    isFanLink: (pb===0),
+                    isFanLink: (pb === 0),
                     counts: true,
                     distance: distance
                 };
@@ -1859,11 +2417,11 @@ function wrapper(plugin_info) {
 
                 // "Respect Intel" stuff
                 if (thisplugin.respectCurrentLinks) {
-                    $.each(thisplugin.intelLinks, function(guid,link){
+                    $.each(thisplugin.intelLinks, function (guid, link) {
                         maplinks.push(link);
                     });
                     for (i in maplinks) {
-                        if (this.intersects(possibleline,maplinks[i]) ) {
+                        if (this.intersects(possibleline, maplinks[i])) {
                             intersection++;
                             if (possibleline.isFanLink && outbound == 1) centerOutgoings--;
                             //console.log("FANPOINTS: " + pa + " - "+pb+" bearing: " + bearing + " " + this.bearingWord(bearing) + "(crosslink)");
@@ -1877,14 +2435,14 @@ function wrapper(plugin_info) {
                 }
 
                 for (i in donelinks) {
-                    if (this.intersects(possibleline,donelinks[i])) {
+                    if (this.intersects(possibleline, donelinks[i])) {
                         intersection++;
                         if (possibleline.isFanLink && outbound == 1) centerOutgoings--;
                         break;
                     }
                 }
                 for (i in fanlinks) {
-                    if (this.intersects(possibleline,fanlinks[i])) {
+                    if (this.intersects(possibleline, fanlinks[i])) {
                         intersection++;
                         if (possibleline.isFanLink && outbound == 1) centerOutgoings--;
                         break;
@@ -1902,20 +2460,19 @@ function wrapper(plugin_info) {
                     var thirds = [];
                     if (thisplugin.respectCurrentLinks) {
                         if (possibleline.counts) {
-                            thirds = this.getThirds(donelinks.concat(maplinks),possibleline.a, possibleline.b);
+                            thirds = this.getThirds(donelinks.concat(maplinks), possibleline.a, possibleline.b);
                         }
                     } else {
-                        thirds = this.getThirds(donelinks,possibleline.a, possibleline.b);
+                        thirds = this.getThirds(donelinks, possibleline.a, possibleline.b);
                     }
 
                     if (thirds.length == 2) {
                         possibleline.isJetLink = true;
                     }
 
-
                     if (possibleline.counts) {
-                        donelinks.splice(donelinks.length-(this.sortedFanpoints.length-pa),0,possibleline);
-                        if (pb===0 && thisplugin.stardirection == thisplugin.starDirENUM.RADIATING && outbound == 1 ) {
+                        donelinks.splice(donelinks.length - (this.sortedFanpoints.length - pa), 0, possibleline);
+                        if (pb === 0 && thisplugin.stardirection == thisplugin.starDirENUM.RADIATING && outbound == 1) {
                             this.sortedFanpoints[pb].outgoing.push(this.sortedFanpoints[pa]);
                             this.sortedFanpoints[pa].incoming.push(this.sortedFanpoints[pb]);
                         } else {
@@ -1924,7 +2481,7 @@ function wrapper(plugin_info) {
                         }
                     }
                     for (var t in thirds) {
-                        triangles.push({a:thirds[t], b:possibleline.a, c:possibleline.b});
+                        triangles.push({ a: thirds[t], b: possibleline.a, c: possibleline.b });
                     }
                 }
             }
@@ -1992,6 +2549,12 @@ function wrapper(plugin_info) {
                 interactive: false,
             });
         });
+
+        if (thisplugin.showOrderPath) {
+            thisplugin.updateOrderPath();
+        } else if (thisplugin.orderPathLayerGroup) {
+            thisplugin.orderPathLayerGroup.clearLayers();
+        }
     };
 
 
@@ -2050,6 +2613,9 @@ function wrapper(plugin_info) {
         thisplugin.numbersLayerGroup = new L.LayerGroup();
         thisplugin.MaxDialogWidth = $(window).width() - 2;
 
+        // ghi#23
+        thisplugin.orderPathLayerGroup = new L.LayerGroup();
+
 
         //Extend LatLng here to ensure it was created before
         thisplugin.initLatLng();
@@ -2065,6 +2631,11 @@ function wrapper(plugin_info) {
         }
         // Show as list
         var buttonPortalList = '<a class="plugin_fanfields_btn" onclick="window.plugin.fanfields.exportText();" title="OpenAll Link Create Star">Show&nbsp;as&nbsp;list</a> ';
+
+        // Manage order
+        var buttonManageOrder = '<a class="plugin_fanfields_btn" id="plugin_fanfields_manageorderbtn" onclick="window.plugin.fanfields.showManageOrderDialog();" title="Manage visiting order of fanfield portals">Manage&nbsp;order</a> ';
+
+
 
         // clockwise &#8635; ↻
         // counterclockwise &#8634; ↺
@@ -2137,6 +2708,7 @@ function wrapper(plugin_info) {
             buttonBookmarksOnly +
             buttonLinkDirectionIndicator +
             buttonPortalList +
+            buttonManageOrder +
             buttonDrawTools +
             buttonBookmarks +
             buttonArcs +
@@ -2171,13 +2743,13 @@ function wrapper(plugin_info) {
 
         $('#fanfields2').append(fanfields_buttons);
 
-//         window.pluginCreateHook('pluginBkmrksEdit');
+        //         window.pluginCreateHook('pluginBkmrksEdit');
 
-//         window.addHook('pluginBkmrksEdit', function (e) {
-//             if (thisplugin.use_bookmarks_only && e.target === 'portal') {
-//                 thisplugin.delayedUpdateLayer(0.5);
-//             }
-//         });
+        //         window.addHook('pluginBkmrksEdit', function (e) {
+        //             if (thisplugin.use_bookmarks_only && e.target === 'portal') {
+        //                 thisplugin.delayedUpdateLayer(0.5);
+        //             }
+        //         });
 
         window.pluginCreateHook('pluginDrawTools');
 
@@ -2198,6 +2770,11 @@ function wrapper(plugin_info) {
             setTimeout(function(){
                 thisplugin.delayedUpdateLayer(1.0);
             },1);
+        });
+        window.map.on('zoomend', function() {
+            if (thisplugin.showOrderPath) {
+                thisplugin.updateOrderPath();
+            }
         });
 
         window.addLayerGroup('Fanfields links', thisplugin.linksLayerGroup, false);
